@@ -354,3 +354,61 @@ class DirectionObsWrapper(gym.core.ObservationWrapper):
         slope = np.divide( self.goal_position[1] - self.agent_pos[1] ,  self.goal_position[0] - self.agent_pos[0])
         obs['goal_direction'] = np.arctan( slope ) if self.type == 'angle' else slope
         return obs
+
+
+
+
+class ContinuousActions(gym.core.Wrapper):
+    """
+    Wrapper which converts the actions from Discrete(N) (N=6) to
+    a softmax-encoded or 0-lower-bounded probability distribution
+    over N different possible actions.
+
+    :param exponentiate:  If False, weight by raw action values.
+    """
+
+    def __init__(self, env, exponentiate=True):
+        super().__init__(env)
+        self.exponentiate = exponentiate
+        self.N = len(env.actions)
+        assert self.N == self.action_space.n
+        self.action_space = spaces.Box(-1, +1, shape=(self.N,)) # I believe HIDIO transforms the action space to -1, 1 anyways (so better not use +-inf?)
+        #self.action_space = spaces.Box(-np.inf, +np.inf, shape=(self.N,))
+        # Problem: There is "another" object self.env, which still has a discrete action space now.
+        # todo: Is this a problem? Where is it used? - Seems no :-)
+
+        # convert state space from uint to float
+        spc = self.observation_space.spaces["image"]
+        self.observation_space.spaces["image"] = spaces.Box(np.min(spc.low), np.max(spc.high), shape=(np.prod(spc.shape) , ))
+
+    def step(self, action):
+        ''' Assumes :param action is a sequence of N arbitrary floats.
+            Samples the action according to multinomial(exp(val), val in action).'''
+        if len(action) != self.N:
+            raise ValueError ("action passed to step() of ContinuousAction wrapper was not "
+                              "a sequence or had wrong length; it was: "+str(action))
+        if self.exponentiate:
+            p = np.exp(action)/np.sum(np.exp(action))
+        else:
+            positive_action = np.array(list(map(lambda val: np.max((val, 0.00001)), action)))
+            p = positive_action / np.sum(positive_action)
+        discrete_action = np.random.choice(np.arange(self.N), p=p)
+        obs, reward, done, info = self.env.step(discrete_action)
+
+        #obs['image'] = obs['image'].astype("float32").flatten()
+        return self._flatten_obs(obs), reward, done, info
+
+    def _step(self, action):
+        return self.step(action)
+
+    @staticmethod
+    def _flatten_obs(obs):
+        obs['image'] = obs['image'].astype("float32").flatten()
+        return obs
+
+    def reset(self, **kwargs):
+        return self._flatten_obs(self.env.reset(**kwargs))
+
+    # def current_time_step(self):
+    #     # TODO!
+    #     pass
