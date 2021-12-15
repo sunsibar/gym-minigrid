@@ -367,10 +367,20 @@ class ContinuousActions(gym.core.Wrapper):
     :param exponentiate:  If False, weight by raw action values.
     """
 
-    def __init__(self, env, exponentiate=True):
+    def __init__(self, env, exponentiate=True, T=10, flatten=False):
+        ''' Instead of choosing directly between N actions, expect N real values, which are then re-weighted to add to
+            one. Then, sample the discrete action by these probabilities.
+            :param exponentiate: If True, rescale every val by exp(T * val) before reweighting to add to one.
+                                Set to False to cap at 0.00001 (or so) before reweighting (no exp.)
+            :param flatten: If True, flatten the image as output.
+        '''
         super().__init__(env)
         self.exponentiate = exponentiate
         self.N = len(env.actions)
+        self.T = T
+        self.flatten = flatten
+        if T >= 90:
+            raise ValueError("T was too large; might lead to nans. T was: "+str(T))
         assert self.N == self.action_space.n
         self.action_space = spaces.Box(-1, +1, shape=(self.N,)) # I believe HIDIO transforms the action space to -1, 1 anyways (so better not use +-inf?)
         #self.action_space = spaces.Box(-np.inf, +np.inf, shape=(self.N,))
@@ -379,7 +389,10 @@ class ContinuousActions(gym.core.Wrapper):
 
         # convert state space from uint to float
         spc = self.observation_space.spaces["image"]
-        self.observation_space.spaces["image"] = spaces.Box(np.min(spc.low), np.max(spc.high), shape=(np.prod(spc.shape) , ))
+        if flatten:
+            self.observation_space.spaces["image"] = spaces.Box(np.min(spc.low), np.max(spc.high), shape=(np.prod(spc.shape) , ))
+        else:
+            self.observation_space.spaces["image"] = spaces.Box(spc.low,spc.high, dtype="float32")
 
     def step(self, action):
         ''' Assumes :param action is a sequence of N arbitrary floats.
@@ -388,25 +401,28 @@ class ContinuousActions(gym.core.Wrapper):
             raise ValueError ("action passed to step() of ContinuousAction wrapper was not "
                               "a sequence or had wrong length; it was: "+str(action))
         if self.exponentiate:
-            p = np.exp(action)/np.sum(np.exp(action))
+            p = np.exp(action * self.T)/np.sum(np.exp(action * self.T))
         else:
             positive_action = np.array(list(map(lambda val: np.max((val, 0.00001)), action)))
             p = positive_action / np.sum(positive_action)
         discrete_action = np.random.choice(np.arange(self.N), p=p)
         obs, reward, done, info = self.env.step(discrete_action)
 
-        #obs['image'] = obs['image'].astype("float32").flatten()
+        obs['image'] = obs['image'].astype("float32").flatten()
         return self._flatten_obs(obs), reward, done, info
 
     def _step(self, action):
         return self.step(action)
 
-    @staticmethod
-    def _flatten_obs(obs):
-        obs['image'] = obs['image'].astype("float32").flatten()
+    def _flatten_obs(self, obs):
+        '''if self.flatten, flatten the observed image, else only convert to float.'''
+        obs['image'] = obs['image'].astype("float32")
+        if self.flatten:
+            obs['image'] = obs['image'].flatten()
         return obs
 
     def reset(self, **kwargs):
+        #return self.env.reset(**kwargs)
         return self._flatten_obs(self.env.reset(**kwargs))
 
     # def current_time_step(self):
